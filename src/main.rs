@@ -1,4 +1,7 @@
 //! Open a shell with a prompt that starts with a dollar sign.
+//!
+
+#![deny(clippy::all)]
 
 use std::env;
 use std::fs;
@@ -29,12 +32,11 @@ impl FromStr for Kind {
     ///
     /// # Supported values:
     ///
-    /// - "sh" => Kind::Sh
-    /// - "bash" => Kind::Bash
-    /// - "ksh", "ksh93", "mksh", "pdksh", "loksh" => Kind::Ksh
-    /// - "zsh" => Kind::Zsh
-    /// - "fish" => Kind::Fish
-    ///
+    /// - "sh" => `Kind::Sh`
+    /// - "bash" => `Kind::Bash`
+    /// - "ksh", "ksh93", "mksh", "pdksh", "loksh" => `Kind::Ksh`
+    /// - "zsh" => `Kind::Zsh`
+    /// - "fish" => `Kind::Fish`
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "sh" => Ok(Kind::Sh),
@@ -58,14 +60,12 @@ impl Workspace {
     ///
     /// # Panics
     /// This will panic if the directory cannot be created.
-    fn dir(&mut self) -> PathBuf {
-        self.0
-            .get_or_insert_with(|| {
-                let p = env::temp_dir().join(format!("dollar-{}", std::process::id()));
-                fs::create_dir_all(&p).expect("Failed to create temp dir");
-                p
-            })
-            .clone()
+    fn dir(&mut self) -> &Path {
+        self.0.get_or_insert_with(|| {
+            let p = env::temp_dir().join(format!("dollar-{}", std::process::id()));
+            fs::create_dir_all(&p).expect("Failed to create temp dir");
+            p
+        })
     }
 
     /// Write `body` to `name` inside the directory and return the path.
@@ -90,11 +90,17 @@ impl Drop for Workspace {
 }
 
 fn main() {
+    // Determine the target shell to spawn.
+    // This is either:
+    //   1. The first command line argument, if provided.
+    //   2. The shell specified by the SHELL environment variable, if set.
+    //   3. "sh" as a fallback.
     let target = env::args()
         .nth(1)
         .or_else(|| env::var("SHELL").ok())
         .unwrap_or_else(|| "sh".into());
 
+    // The shell basename is used to determine its kind.
     let base = Path::new(&target)
         .file_name()
         .and_then(|s| s.to_str())
@@ -108,9 +114,10 @@ fn main() {
     let mut ws = Workspace(None);
     let mut cmd = Command::new(&program);
 
+    // Configure the prompt according to the shell's kind.
     match kind {
         Kind::Sh => {
-            // sh supports the PS1 environment variable if ENV is unset
+            // sh supports the PS1 environment variable if ENV is unset.
             cmd.env("PS1", "$ ").env_remove("ENV");
         }
         Kind::Bash => {
@@ -136,9 +143,9 @@ fn main() {
         }
         Kind::Zsh => {
             // zsh uses ZDOTDIR to find its rc files, but only if it's set at startup.
-            // otherwise, it uses ~, and ignores ZDOTDIR even if it's set later.
-            // so, make a temp dir, put the rc files there, and set ZDOTDIR to that dir at startup.
-            // also, source the original rc files from the temp ones, so that the shell behaves more like the normal zsh.
+            // Otherwise, it uses ~, and ignores ZDOTDIR even if it's set later.
+            // So, make a temp dir, put the rc files there, and set ZDOTDIR to that dir at startup.
+            // Also, source the original rc files from the temp ones, so that the shell behaves more like the normal zsh.
             // RPROMPT, and precmd_functions are set to avoid the default right prompt and the timestamp in the prompt.
             let orig = env::var("ZDOTDIR")
                 .or_else(|_| env::var("HOME"))
@@ -154,11 +161,14 @@ fn main() {
             cmd.env("_DOLLAR_ZDOTDIR", orig).env("ZDOTDIR", ws.dir());
         }
         Kind::Fish => {
+            // fish doesn't support PS1 at all; but yay! inline commands!
+            // We just pass the prompt definitions (in fish, prompt is a fn).
             cmd.arg("-C")
                 .arg("function fish_prompt; echo -n '$ '; end; function fish_right_prompt; end");
         }
     }
 
+    // Spawn the shell and wait for it to exit.
     cmd.spawn()
         .expect("Failed to spawn shell")
         .wait()
